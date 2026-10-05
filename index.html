@@ -66,7 +66,7 @@
             <div class="bg-slate-900/80 p-4 rounded-xl border border-cyan-500/30 mb-8 text-left text-xs md:text-sm text-slate-300 space-y-2 glow-box">
                 <p class="font-bold text-cyan-300 mb-1">🎮 조작 방법</p>
                 <p>• <b>이동:</b> 방향키 (←, →, ↑, ↓) 또는 마우스 / 터치 드래그</p>
-                <p>• <b>미사일:</b> 자동 발사 (SpaceBar로 수동 연사 가능)</p>
+                <p>• <b>미사일:</b> 자동 발사</p>
             </div>
             <button id="startBtn" class="px-8 py-3 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-lg rounded-xl transition transform hover:scale-105 shadow-lg shadow-cyan-500/50">
                 게임 시작
@@ -94,10 +94,80 @@
     </main>
 
     <script>
+        let audioCtx = null;
+
+        function initAudio() {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+        }
+
+        // Sound Effect: Laser Shoot
+        function playLaserSound() {
+            if (!audioCtx) return;
+            try {
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                
+                osc.type = 'sawtooth';
+                osc.frequency.setValueAtTime(800, audioCtx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(120, audioCtx.currentTime + 0.12);
+
+                gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+                gain.gain.linearRampToValueAtTime(0.01, audioCtx.currentTime + 0.12);
+
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.12);
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        // Sound Effect: Explosion
+        function playExplosionSound() {
+            if (!audioCtx) return;
+            try {
+                // White noise buffer for explosion rumble
+                const bufferSize = audioCtx.sampleRate * 0.3;
+                const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+                const output = buffer.getChannelData(0);
+                for (let i = 0; i < bufferSize; i++) {
+                    output[i] = Math.random() * 2 - 1;
+                }
+
+                const whiteNoise = audioCtx.createBufferSource();
+                whiteNoise.buffer = buffer;
+
+                // Filter for low-frequency boom
+                const filter = audioCtx.createBiquadFilter();
+                filter.type = 'lowpass';
+                filter.frequency.setValueAtTime(300, audioCtx.currentTime);
+                filter.frequency.linearRampToValueAtTime(50, audioCtx.currentTime + 0.3);
+
+                const gain = audioCtx.createGain();
+                gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
+
+                whiteNoise.connect(filter);
+                filter.connect(gain);
+                gain.connect(audioCtx.destination);
+
+                whiteNoise.start();
+                whiteNoise.stop(audioCtx.currentTime + 0.3);
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
         const canvas = document.getElementById('gameCanvas');
         const ctx = canvas.getContext('2d');
 
-        // UI Elements
         const startScreen = document.getElementById('startScreen');
         const gameOverScreen = document.getElementById('gameOverScreen');
         const startBtn = document.getElementById('startBtn');
@@ -109,7 +179,6 @@
         const finalScoreEl = document.getElementById('finalScore');
         const finalKillsEl = document.getElementById('finalKills');
 
-        // Responsive Canvas Setup
         function resizeCanvas() {
             const container = canvas.parentElement;
             canvas.width = container.clientWidth;
@@ -118,20 +187,17 @@
         window.addEventListener('resize', resizeCanvas);
         resizeCanvas();
 
-        // Game State Variables
-        let gameState = 'START'; // START, PLAYING, GAMEOVER
+        let gameState = 'START'; 
         let score = 0;
         let highScore = localStorage.getItem('cave_shooter_highscore') || 0;
         highScoreValEl.innerText = highScore;
         let kills = 0;
         let gameTime = 0;
 
-        // Input Tracking
         const keys = {};
         window.addEventListener('keydown', e => { keys[e.code] = true; });
         window.addEventListener('keyup', e => { keys[e.code] = false; });
 
-        // Touch & Mouse Control State
         let isPointerDown = false;
         let targetX = 0;
         let targetY = 0;
@@ -161,7 +227,7 @@
                 this.speed = 6;
                 this.maxHp = 3;
                 this.hp = 3;
-                this.power = 1; // 1, 2, 3
+                this.power = 1;
                 this.invincibleTimer = 0;
                 this.shootCooldown = 0;
             }
@@ -176,13 +242,11 @@
             }
 
             update() {
-                // Keyboard Movement
                 if (keys['ArrowLeft'] || keys['KeyA']) this.x -= this.speed;
                 if (keys['ArrowRight'] || keys['KeyD']) this.x += this.speed;
                 if (keys['ArrowUp'] || keys['KeyW']) this.y -= this.speed;
                 if (keys['ArrowDown'] || keys['KeyS']) this.y += this.speed;
 
-                // Touch / Mouse Smooth Follow
                 if (isPointerDown) {
                     const dx = targetX - (this.x + this.width / 2);
                     const dy = targetY - (this.y + this.height / 2);
@@ -190,25 +254,23 @@
                     this.y += dy * 0.15;
                 }
 
-                // Boundary Limits
                 if (this.x < 10) this.x = 10;
                 if (this.x > canvas.width - this.width - 10) this.x = canvas.width - this.width - 10;
                 if (this.y < 10) this.y = 10;
                 if (this.y > canvas.height - this.height - 10) this.y = canvas.height - this.height - 10;
 
-                // Invulnerability Timer
                 if (this.invincibleTimer > 0) this.invincibleTimer--;
 
-                // Auto Shooting
                 if (this.shootCooldown > 0) {
                     this.shootCooldown--;
                 } else {
                     this.shoot();
-                    this.shootCooldown = 12; // Shooting speed rate
+                    this.shootCooldown = 12;
                 }
             }
 
             shoot() {
+                playLaserSound();
                 if (this.power === 1) {
                     bullets.push(new Bullet(this.x + this.width / 2 - 3, this.y, 0, -12, true));
                 } else if (this.power === 2) {
@@ -222,18 +284,16 @@
             }
 
             draw() {
-                if (this.invincibleTimer > 0 && Math.floor(Date.now() / 50) % 2 === 0) return; // Flash effect
+                if (this.invincibleTimer > 0 && Math.floor(Date.now() / 50) % 2 === 0) return;
 
                 ctx.save();
                 ctx.translate(this.x + this.width / 2, this.y + this.height / 2);
 
-                // Engine flame glow
                 ctx.fillStyle = '#38bdf8';
                 ctx.beginPath();
                 ctx.arc(0, this.height / 2, 6 + Math.random() * 4, 0, Math.PI * 2);
                 ctx.fill();
 
-                // Ship Body (Futuristic Fighter)
                 ctx.fillStyle = '#0ea5e9';
                 ctx.strokeStyle = '#38bdf8';
                 ctx.lineWidth = 2;
@@ -249,7 +309,6 @@
                 ctx.fill();
                 ctx.stroke();
 
-                // Cockpit glow
                 ctx.fillStyle = '#a5f3fc';
                 ctx.beginPath();
                 ctx.arc(0, -2, 5, 0, Math.PI * 2);
@@ -296,7 +355,7 @@
 
         class Enemy {
             constructor(type) {
-                this.type = type; // 'drone', 'bat', 'stalactite' (obstacle)
+                this.type = type; 
                 this.width = type === 'stalactite' ? 50 : 36;
                 this.height = type === 'stalactite' ? 60 : 36;
                 this.x = Math.random() * (canvas.width - this.width - 60) + 30;
@@ -316,7 +375,6 @@
                     this.x += Math.sin(this.angle) * 2;
                 }
 
-                // Enemy shooting (Drones shoot occasionally)
                 if (this.type === 'drone') {
                     this.shootTimer++;
                     if (this.shootTimer > 90) {
@@ -331,7 +389,6 @@
                 ctx.translate(this.x + this.width / 2, this.y + this.height / 2);
 
                 if (this.type === 'stalactite') {
-                    // Stalactite / Cave Obstacle
                     ctx.fillStyle = '#475569';
                     ctx.strokeStyle = '#94a3b8';
                     ctx.lineWidth = 2;
@@ -343,7 +400,6 @@
                     ctx.fill();
                     ctx.stroke();
                 } else if (this.type === 'drone') {
-                    // Sci-fi Cave Drone
                     ctx.fillStyle = '#64748b';
                     ctx.strokeStyle = '#38bdf8';
                     ctx.lineWidth = 2;
@@ -352,7 +408,6 @@
                     ctx.fill();
                     ctx.stroke();
 
-                    // Glowing red eye
                     ctx.fillStyle = '#f43f5e';
                     ctx.shadowColor = '#f43f5e';
                     ctx.shadowBlur = 8;
@@ -360,7 +415,6 @@
                     ctx.arc(0, 0, 6, 0, Math.PI * 2);
                     ctx.fill();
                 } else {
-                    // Cave Bat / Alien Bug
                     ctx.fillStyle = '#7c2d12';
                     ctx.strokeStyle = '#fb923c';
                     ctx.lineWidth = 2;
@@ -378,7 +432,7 @@
             constructor(x, y, type) {
                 this.x = x;
                 this.y = y;
-                this.type = type; // 'hp', 'power'
+                this.type = type; 
                 this.width = 24;
                 this.height = 24;
                 this.vy = 1.5;
@@ -396,7 +450,6 @@
                 ctx.rotate(this.angle);
 
                 if (this.type === 'hp') {
-                    // Health Heart Item
                     ctx.fillStyle = '#f43f5e';
                     ctx.shadowColor = '#f43f5e';
                     ctx.shadowBlur = 10;
@@ -407,7 +460,6 @@
                     ctx.textBaseline = 'middle';
                     ctx.fillText('+', 0, 0);
                 } else {
-                    // Power-up Star Item
                     ctx.fillStyle = '#eab308';
                     ctx.shadowColor = '#eab308';
                     ctx.shadowBlur = 10;
@@ -442,7 +494,6 @@
                     this.wallsRight.push(rightWidth);
                 }
 
-                // Crystals on walls
                 for (let i = 0; i < 20; i++) {
                     this.crystals.push({
                         x: Math.random() * canvas.width,
@@ -455,7 +506,6 @@
             }
 
             update() {
-                // Scroll cave walls down
                 this.wallsLeft.pop();
                 this.wallsRight.pop();
 
@@ -465,7 +515,6 @@
                 lastLeft += (Math.random() - 0.5) * 10;
                 lastRight += (Math.random() - 0.5) * 10;
 
-                // Keep bounds reasonable
                 if (lastLeft < 20) lastLeft = 20;
                 if (lastLeft > 150) lastLeft = 150;
                 if (lastRight < 20) lastRight = 20;
@@ -474,7 +523,6 @@
                 this.wallsLeft.unshift(lastLeft);
                 this.wallsRight.unshift(lastRight);
 
-                // Update background crystals
                 this.crystals.forEach(c => {
                     c.y += 1.5;
                     c.alpha += 0.02;
@@ -486,7 +534,6 @@
             }
 
             draw() {
-                // Draw background crystals
                 this.crystals.forEach(c => {
                     ctx.save();
                     ctx.fillStyle = c.color;
@@ -499,12 +546,10 @@
                     ctx.restore();
                 });
 
-                // Draw Cave Walls (Stalactites / Rock Edges)
                 ctx.fillStyle = '#1e293b';
                 ctx.strokeStyle = '#334155';
                 ctx.lineWidth = 3;
 
-                // Left Wall
                 ctx.beginPath();
                 ctx.moveTo(0, 0);
                 for (let i = 0; i < this.wallsLeft.length; i++) {
@@ -515,7 +560,6 @@
                 ctx.fill();
                 ctx.stroke();
 
-                // Right Wall
                 ctx.beginPath();
                 ctx.moveTo(canvas.width, 0);
                 for (let i = 0; i < this.wallsRight.length; i++) {
@@ -553,7 +597,6 @@
             highScoreValEl.innerText = highScore;
             powerValEl.innerText = 'Lv.' + player.power;
 
-            // Render HP bars
             hpBarContainer.innerHTML = '';
             for (let i = 0; i < player.maxHp; i++) {
                 const heart = document.createElement('div');
@@ -563,7 +606,6 @@
         }
 
         function checkCollisions() {
-            // Bullet vs Enemy
             for (let i = bullets.length - 1; i >= 0; i--) {
                 const b = bullets[i];
                 if (!b.isPlayer) continue;
@@ -576,14 +618,13 @@
                         b.y < e.y + e.height &&
                         b.y + b.height > e.y
                     ) {
-                        // Hit enemy
                         bullets.splice(i, 1);
                         e.hp--;
                         if (e.hp <= 0) {
+                            playExplosionSound();
                             score += e.type === 'stalactite' ? 50 : 100;
                             kills++;
 
-                            // Drop Item chance
                             if (Math.random() < 0.25) {
                                 const itemType = Math.random() < 0.5 ? 'hp' : 'power';
                                 items.push(new Item(e.x + e.width / 2 - 12, e.y + e.height / 2 - 12, itemType));
@@ -596,7 +637,6 @@
                 }
             }
 
-            // Enemy Bullet vs Player
             for (let i = bullets.length - 1; i >= 0; i--) {
                 const b = bullets[i];
                 if (b.isPlayer) continue;
@@ -613,7 +653,6 @@
                 }
             }
 
-            // Enemy vs Player Collision
             for (let j = enemies.length - 1; j >= 0; j--) {
                 const e = enemies[j];
                 if (
@@ -622,13 +661,13 @@
                     player.y < e.y + e.height &&
                     player.y + player.height > e.y
                 ) {
+                    playExplosionSound();
                     enemies.splice(j, 1);
                     hitPlayer();
                     break;
                 }
             }
 
-            // Item vs Player Collision
             for (let i = items.length - 1; i >= 0; i--) {
                 const it = items[i];
                 if (
@@ -651,9 +690,10 @@
         function hitPlayer() {
             if (player.invincibleTimer > 0) return;
             player.hp--;
-            player.invincibleTimer = 60; // 1 second invulnerability flash
+            player.invincibleTimer = 60;
 
             if (player.hp <= 0) {
+                playExplosionSound();
                 triggerGameOver();
             }
         }
@@ -674,7 +714,6 @@
 
             gameTime++;
 
-            // Spawning Enemies & Obstacles
             enemySpawnTimer++;
             if (enemySpawnTimer > Math.max(30, 70 - Math.floor(gameTime / 300))) {
                 enemySpawnTimer = 0;
@@ -685,7 +724,6 @@
                 enemies.push(new Enemy(type));
             }
 
-            // Update entities
             cave.update();
             player.update();
 
@@ -701,7 +739,6 @@
             checkCollisions();
             updateUI();
 
-            // Clear & Render
             ctx.clearRect(0, 0, canvas.width, canvas.height);
 
             cave.draw();
@@ -713,8 +750,8 @@
             requestAnimationFrame(gameLoop);
         }
 
-        // Event Handlers for UI Buttons
         startBtn.addEventListener('click', () => {
+            initAudio();
             startScreen.classList.add('hidden');
             resetGame();
             gameState = 'PLAYING';
@@ -722,6 +759,7 @@
         });
 
         restartBtn.addEventListener('click', () => {
+            initAudio();
             gameOverScreen.classList.add('hidden');
             resetGame();
             gameState = 'PLAYING';
